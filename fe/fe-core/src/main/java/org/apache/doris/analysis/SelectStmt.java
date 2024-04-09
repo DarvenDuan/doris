@@ -339,8 +339,16 @@ public class SelectStmt extends QueryStmt {
         return aggInfo;
     }
 
+    public void setAggInfo(AggregateInfo aggInfo) {
+        this.aggInfo = aggInfo;
+    }
+
     public GroupingInfo getGroupingInfo() {
         return groupingInfo;
+    }
+
+    public void setGroupByClause(GroupByClause groupByClause) {
+        this.groupByClause = groupByClause;
     }
 
     public GroupByClause getGroupByClause() {
