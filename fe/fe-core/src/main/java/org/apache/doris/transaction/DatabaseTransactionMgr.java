@@ -37,7 +37,6 @@ import org.apache.doris.common.Config;
 import org.apache.doris.common.DuplicatedRequestException;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
-import org.apache.doris.common.FeNameFormat;
 import org.apache.doris.common.LabelAlreadyUsedException;
 import org.apache.doris.common.LoadException;
 import org.apache.doris.common.MetaNotFoundException;
@@ -46,7 +45,6 @@ import org.apache.doris.common.QuotaExceedException;
 import org.apache.doris.common.UserException;
 import org.apache.doris.common.util.DebugPointUtil;
 import org.apache.doris.common.util.DebugUtil;
-import org.apache.doris.common.util.InternalDatabaseUtil;
 import org.apache.doris.common.util.MetaLockUtils;
 import org.apache.doris.common.util.TimeUtils;
 import org.apache.doris.datasource.InternalCatalog;
@@ -64,7 +62,6 @@ import org.apache.doris.task.ClearTransactionTask;
 import org.apache.doris.task.PublishVersionTask;
 import org.apache.doris.thrift.TTabletCommitInfo;
 import org.apache.doris.thrift.TUniqueId;
-import org.apache.doris.transaction.TransactionState;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
@@ -224,7 +221,7 @@ public class DatabaseTransactionMgr {
         this.editLog = env.getEditLog();
         if (batchProcessTxn) {
             ScheduledExecutorService scheduledExecutorService = Executors.newScheduledThreadPool(1);
-            scheduledExecutorService.scheduleAtFixedRate(()->{
+            scheduledExecutorService.scheduleAtFixedRate(() -> {
                 int size = beginTxnRequestQueue.size();
                 if (size == 0) {
                     return;
@@ -465,18 +462,18 @@ public class DatabaseTransactionMgr {
             }
             return future.get().transactionId;
         } catch (Exception e) {
-            throw new BeginTransactionException("async begin transaction failed, label: " +
-                    label + ", msg: " + e.getMessage());
+            throw new BeginTransactionException("async begin transaction failed, label: "
+                    + label + ", msg: " + e.getMessage());
         }
     }
 
     private void beginTransaction(List<BeginTxnRequest> requests) {
         writeLock();
         // requestId -> transactionState
-        Map<TUniqueId,TransactionState> states = new HashMap();
+        Map<TUniqueId, TransactionState> states = new HashMap<>();
         try {
             for (BeginTxnRequest request : requests) {
-                TransactionState.TxnCoordinator coordinator= request.coordinator;
+                TransactionState.TxnCoordinator coordinator = request.coordinator;
                 String label = request.label;
                 TUniqueId requestId = request.requestId;
                 try {
