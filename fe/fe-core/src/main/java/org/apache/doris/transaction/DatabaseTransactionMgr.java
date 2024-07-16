@@ -472,7 +472,8 @@ public class DatabaseTransactionMgr {
 
     private void beginTransaction(List<BeginTxnRequest> requests) {
         writeLock();
-        List<TransactionState> states = new ArrayList<>();
+        // requestId -> transactionState
+        Map<TUniqueId,TransactionState> states = new HashMap();
         try {
             for (BeginTxnRequest request : requests) {
                 TransactionState.TxnCoordinator coordinator= request.coordinator;
@@ -510,27 +511,30 @@ public class DatabaseTransactionMgr {
                             requestId, request.sourceType, coordinator, request.listenerId,
                             request.timeoutSecond * 1000);
                     transactionState.setPrepareTime(System.currentTimeMillis());
-                    states.add(transactionState);
+                    states.put(requestId, transactionState);
                 } catch (Exception e) {
                     BeginTxnResponse response = new BeginTxnResponse();
                     response.errMsg = e.getMessage();
                     request.completableFuture.complete(response);
                 }
             }
-            unprotectedUpsertBatchTransactionState(states);
-            for (TransactionState state : states) {
-                BeginTxnResponse response = new BeginTxnResponse();
-                response.transactionId = state.getTransactionId();
-                for (BeginTxnRequest request : requests) {
-                    if (request.requestId == state.getRequestId()) {
-                        request.completableFuture.complete(response);
-                        if (MetricRepo.isInit) {
-                            MetricRepo.COUNTER_TXN_BEGIN.increase(1L);
-                        }
-                    }
-                }
+            if (!states.isEmpty()) {
+                unprotectedUpsertBatchTransactionState(Lists.newArrayList(states.values()));
             }
         } finally {
+            // insure all future will be completed even if catch exceptions
+            for (BeginTxnRequest request : requests) {
+                if (!request.completableFuture.isDone()) {
+                    TransactionState state = states.get(request.requestId);
+                    BeginTxnResponse response = new BeginTxnResponse();
+                    if (state != null) {
+                        response.transactionId = state.getTransactionId();
+                    } else {
+                        response.errMsg = "begin txn failed!";
+                    }
+                    request.completableFuture.complete(response);
+                }
+            }
             writeUnlock();
         }
     }
@@ -1800,6 +1804,9 @@ public class DatabaseTransactionMgr {
     }
 
     protected void unprotectedUpsertBatchTransactionState(List<TransactionState> transactionStates) {
+        if (transactionStates.isEmpty()) {
+            return;
+        }
         // if this is a replay operation, we should not log it
         List<TransactionState> logStates = new ArrayList<>();
         for (TransactionState transactionState : transactionStates) {
@@ -1824,7 +1831,9 @@ public class DatabaseTransactionMgr {
             }
             updateTxnLabels(transactionState);
         }
-        editLog.logBatchInsertTransactionState(logStates);
+        if (!logStates.isEmpty()) {
+            editLog.logBatchInsertTransactionState(logStates);
+        }
     }
 
     public int getRunningTxnNumsWithLock() {

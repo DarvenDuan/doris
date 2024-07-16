@@ -1656,6 +1656,9 @@ public class EditLog {
     }
 
     public void logBatchInsertTransactionState(List<TransactionState> transactionStates) {
+        if (transactionStates.isEmpty()) {
+            return;
+        }
         long start = System.currentTimeMillis();
         List<Long> logIds = logEdit(OperationType.OP_UPSERT_TRANSACTION_STATE, transactionStates);
         long logEditEnd = System.currentTimeMillis();
