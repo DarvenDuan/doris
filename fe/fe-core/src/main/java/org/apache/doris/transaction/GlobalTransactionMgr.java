@@ -26,11 +26,13 @@ import org.apache.doris.cloud.proto.Cloud.CommitTxnResponse;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.Config;
 import org.apache.doris.common.DuplicatedRequestException;
+import org.apache.doris.common.FeNameFormat;
 import org.apache.doris.common.LabelAlreadyUsedException;
 import org.apache.doris.common.MetaNotFoundException;
 import org.apache.doris.common.Pair;
 import org.apache.doris.common.QuotaExceedException;
 import org.apache.doris.common.UserException;
+import org.apache.doris.common.util.InternalDatabaseUtil;
 import org.apache.doris.common.util.MetaLockUtils;
 import org.apache.doris.metric.AutoMappedMetric;
 import org.apache.doris.metric.GaugeMetricImpl;
@@ -38,6 +40,7 @@ import org.apache.doris.metric.MetricRepo;
 import org.apache.doris.persist.BatchRemoveTransactionsOperation;
 import org.apache.doris.persist.BatchRemoveTransactionsOperationV2;
 import org.apache.doris.persist.EditLog;
+import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.thrift.TStatus;
 import org.apache.doris.thrift.TUniqueId;
 import org.apache.doris.thrift.TWaitingTxnStatusRequest;
@@ -45,6 +48,7 @@ import org.apache.doris.thrift.TWaitingTxnStatusResult;
 import org.apache.doris.transaction.TransactionState.LoadJobSourceType;
 import org.apache.doris.transaction.TransactionState.TxnCoordinator;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import org.apache.commons.lang3.StringUtils;
@@ -169,9 +173,23 @@ public class GlobalTransactionMgr implements GlobalTransactionMgrIface {
                             Config.min_load_timeout_second);
             }
 
+            Database db = env.getInternalCatalog().getDbOrMetaException(dbId);
+            if (!coordinator.isFromInternal) {
+                InternalDatabaseUtil.checkDatabase(db.getFullName(), ConnectContext.get());
+            }
+            Preconditions.checkNotNull(coordinator);
+            Preconditions.checkNotNull(label);
+            FeNameFormat.checkLabel(label);
+
             DatabaseTransactionMgr dbTransactionMgr = getDatabaseTransactionMgr(dbId);
-            return dbTransactionMgr.beginTransaction(tableIdList, label, requestId,
-                coordinator, sourceType, listenerId, timeoutSecond);
+            dbTransactionMgr.checkDatabaseDataQuota();
+            if (Config.enable_batch_process_txn) {
+                return dbTransactionMgr.asyncBeginTransaction(tableIdList, label, requestId,
+                        coordinator, sourceType, listenerId, timeoutSecond);
+            } else {
+                return dbTransactionMgr.beginTransaction(tableIdList, label, requestId,
+                        coordinator, sourceType, listenerId, timeoutSecond);
+            }
         } catch (DuplicatedRequestException e) {
             throw e;
         } catch (Exception e) {

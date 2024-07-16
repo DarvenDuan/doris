@@ -2657,6 +2657,9 @@ public class Config extends ConfigBase {
             "Should the request content be logged before each request starts, specifically the query statements"})
     public static boolean enable_print_request_before_execution = false;
 
+    @ConfField(mutable = true, masterOnly = true, description = "是否开启事务批量处理，高并发场景下能够提高系统吞吐")
+    public static boolean enable_batch_process_txn = false;
+
     //==========================================================================
     //                    begin of cloud config
     //==========================================================================

@@ -64,6 +64,7 @@ import org.apache.doris.task.ClearTransactionTask;
 import org.apache.doris.task.PublishVersionTask;
 import org.apache.doris.thrift.TTabletCommitInfo;
 import org.apache.doris.thrift.TUniqueId;
+import org.apache.doris.transaction.TransactionState;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
@@ -90,7 +91,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.stream.Collectors;
 
@@ -109,6 +115,22 @@ public class DatabaseTransactionMgr {
         FAILED,
         TIMEOUT_SUCC,  // each tablet has least one replica succ, and timeout
         QUORUM_SUCC,   // each tablet has least quorum replicas succ
+    }
+
+    private class BeginTxnRequest {
+        List<Long> tableIdList;
+        String label;
+        TUniqueId requestId;
+        TransactionState.TxnCoordinator coordinator;
+        TransactionState.LoadJobSourceType sourceType;
+        long listenerId;
+        long timeoutSecond;
+        CompletableFuture<BeginTxnResponse> completableFuture;
+    }
+
+    private class BeginTxnResponse {
+        long transactionId;
+        String errMsg;
     }
 
     private static final Logger LOG = LogManager.getLogger(DatabaseTransactionMgr.class);
@@ -172,6 +194,11 @@ public class DatabaseTransactionMgr {
 
     private long lockReportingThresholdMs = Config.lock_reporting_threshold_ms;
 
+    private boolean batchProcessTxn = Config.enable_batch_process_txn;
+
+    private LinkedBlockingDeque<BeginTxnRequest> beginTxnRequestQueue = new LinkedBlockingDeque<>();
+
+
     private void readLock() {
         this.transactionLock.readLock().lock();
     }
@@ -195,6 +222,21 @@ public class DatabaseTransactionMgr {
         this.env = env;
         this.idGenerator = idGenerator;
         this.editLog = env.getEditLog();
+        if (batchProcessTxn) {
+            ScheduledExecutorService scheduledExecutorService = Executors.newScheduledThreadPool(1);
+            scheduledExecutorService.scheduleAtFixedRate(()->{
+                int size = beginTxnRequestQueue.size();
+                if (size == 0) {
+                    return;
+                }
+                List<BeginTxnRequest> requests = new ArrayList<>();
+                LOG.info("begin transaction request size: " + size);
+                for (int i = 0; i < size; ++i) {
+                    requests.add(beginTxnRequestQueue.pop());
+                }
+                beginTransaction(requests);
+            }, 0, 100, TimeUnit.MILLISECONDS);
+        }
     }
 
     public long getDbId() {
@@ -347,14 +389,6 @@ public class DatabaseTransactionMgr {
             long listenerId, long timeoutSecond)
             throws DuplicatedRequestException, LabelAlreadyUsedException, BeginTransactionException,
             AnalysisException, QuotaExceedException, MetaNotFoundException {
-        Database db = env.getInternalCatalog().getDbOrMetaException(dbId);
-        if (!coordinator.isFromInternal) {
-            InternalDatabaseUtil.checkDatabase(db.getFullName(), ConnectContext.get());
-        }
-        checkDatabaseDataQuota();
-        Preconditions.checkNotNull(coordinator);
-        Preconditions.checkNotNull(label);
-        FeNameFormat.checkLabel(label);
 
         long tid = 0L;
         writeLock();
@@ -410,7 +444,98 @@ public class DatabaseTransactionMgr {
         return tid;
     }
 
-    private void checkDatabaseDataQuota() throws MetaNotFoundException, QuotaExceedException {
+    public long asyncBeginTransaction(List<Long> tableIdList, String label, TUniqueId requestId,
+            TransactionState.TxnCoordinator coordinator, TransactionState.LoadJobSourceType sourceType,
+            long listenerId, long timeoutSecond) throws BeginTransactionException {
+        BeginTxnRequest request = new BeginTxnRequest();
+        request.requestId = requestId;
+        request.tableIdList = tableIdList;
+        request.label = label;
+        request.coordinator = coordinator;
+        request.sourceType = sourceType;
+        request.listenerId = listenerId;
+        request.timeoutSecond = timeoutSecond;
+        try {
+            CompletableFuture<BeginTxnResponse> future = new CompletableFuture<>();
+            request.completableFuture = future;
+            beginTxnRequestQueue.add(request);
+            BeginTxnResponse response = future.get();
+            if (response.errMsg != null) {
+                throw new BeginTransactionException(response.errMsg);
+            }
+            return future.get().transactionId;
+        } catch (Exception e) {
+            throw new BeginTransactionException("async begin transaction failed, label: " +
+                    label + ", msg: " + e.getMessage());
+        }
+    }
+
+    private void beginTransaction(List<BeginTxnRequest> requests) {
+        writeLock();
+        List<TransactionState> states = new ArrayList<>();
+        try {
+            for (BeginTxnRequest request : requests) {
+                TransactionState.TxnCoordinator coordinator= request.coordinator;
+                String label = request.label;
+                TUniqueId requestId = request.requestId;
+                try {
+                    Set<Long> existingTxnIds = unprotectedGetTxnIdsByLabel(label);
+                    if (existingTxnIds != null && !existingTxnIds.isEmpty()) {
+                        List<TransactionState> notAbortedTxns = Lists.newArrayList();
+                        for (long txnId : existingTxnIds) {
+                            TransactionState txn = unprotectedGetTransactionState(txnId);
+                            Preconditions.checkNotNull(txn);
+                            if (txn.getTransactionStatus() != TransactionStatus.ABORTED) {
+                                notAbortedTxns.add(txn);
+                            }
+                        }
+                        // there should be at most 1 txn in PREPARE/PRECOMMITTED/COMMITTED/VISIBLE status
+                        Preconditions.checkState(notAbortedTxns.size() <= 1, notAbortedTxns);
+                        if (!notAbortedTxns.isEmpty()) {
+                            TransactionState notAbortedTxn = notAbortedTxns.get(0);
+                            if (requestId != null && (notAbortedTxn.getTransactionStatus() == TransactionStatus.PREPARE
+                                    || notAbortedTxn.getTransactionStatus() == TransactionStatus.PRECOMMITTED)
+                                    && notAbortedTxn.getRequestId() != null && notAbortedTxn.getRequestId()
+                                    .equals(requestId)) {
+                                // this may be a retry request for same job, just return existing txn id.
+                                throw new DuplicatedRequestException(DebugUtil.printId(requestId),
+                                        notAbortedTxn.getTransactionId(), "");
+                            }
+                            throw new LabelAlreadyUsedException(notAbortedTxn);
+                        }
+                    }
+                    checkRunningTxnExceedLimit();
+                    long tid = idGenerator.getNextTransactionId();
+                    TransactionState transactionState = new TransactionState(dbId, request.tableIdList, tid, label,
+                            requestId, request.sourceType, coordinator, request.listenerId,
+                            request.timeoutSecond * 1000);
+                    transactionState.setPrepareTime(System.currentTimeMillis());
+                    states.add(transactionState);
+                } catch (Exception e) {
+                    BeginTxnResponse response = new BeginTxnResponse();
+                    response.errMsg = e.getMessage();
+                    request.completableFuture.complete(response);
+                }
+            }
+            unprotectedUpsertBatchTransactionState(states);
+            for (TransactionState state : states) {
+                BeginTxnResponse response = new BeginTxnResponse();
+                response.transactionId = state.getTransactionId();
+                for (BeginTxnRequest request : requests) {
+                    if (request.requestId == state.getRequestId()) {
+                        request.completableFuture.complete(response);
+                        if (MetricRepo.isInit) {
+                            MetricRepo.COUNTER_TXN_BEGIN.increase(1L);
+                        }
+                    }
+                }
+            }
+        } finally {
+            writeUnlock();
+        }
+    }
+
+    public void checkDatabaseDataQuota() throws MetaNotFoundException, QuotaExceedException {
         Database db = env.getInternalCatalog().getDbOrMetaException(dbId);
 
         if (usedQuotaDataBytes == -1) {
@@ -1672,6 +1797,34 @@ public class DatabaseTransactionMgr {
             }
         }
         updateTxnLabels(transactionState);
+    }
+
+    protected void unprotectedUpsertBatchTransactionState(List<TransactionState> transactionStates) {
+        // if this is a replay operation, we should not log it
+        List<TransactionState> logStates = new ArrayList<>();
+        for (TransactionState transactionState : transactionStates) {
+            if (transactionState.getTransactionStatus() != TransactionStatus.PREPARE
+                    || transactionState.getSourceType() == TransactionState.LoadJobSourceType.FRONTEND) {
+                logStates.add(transactionState);
+            }
+            if (!transactionState.getTransactionStatus().isFinalStatus()) {
+                if (idToRunningTransactionState.put(transactionState.getTransactionId(), transactionState) == null) {
+                    runningTxnNums++;
+                }
+            } else {
+                if (idToRunningTransactionState.remove(transactionState.getTransactionId()) != null) {
+                    runningTxnNums--;
+                }
+                idToFinalStatusTransactionState.put(transactionState.getTransactionId(), transactionState);
+                if (transactionState.isShortTxn()) {
+                    finalStatusTransactionStateDequeShort.add(transactionState);
+                } else {
+                    finalStatusTransactionStateDequeLong.add(transactionState);
+                }
+            }
+            updateTxnLabels(transactionState);
+        }
+        editLog.logBatchInsertTransactionState(logStates);
     }
 
     public int getRunningTxnNumsWithLock() {
