@@ -2683,6 +2683,9 @@ public class Config extends ConfigBase {
     @ConfField(mutable = true)
     public static boolean enable_cooldown_replica_affinity = true;
 
+    @ConfField(mutable = true, masterOnly = true, description = "是否开启事务批量处理，高并发场景下能够提高系统吞吐")
+    public static boolean enable_batch_process_txn = false;
+
     //==========================================================================
     //                    begin of cloud config
     //==========================================================================
