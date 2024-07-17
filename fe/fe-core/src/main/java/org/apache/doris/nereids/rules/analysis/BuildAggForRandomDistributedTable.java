@@ -78,13 +78,13 @@ public class BuildAggForRandomDistributedTable implements AnalysisRuleFactory {
                         .when(this::isQuery)
                         .when(agg -> isRandomDistributedTbl(agg.child()))
                         .whenNot(agg -> {
-                    Set<AggregateFunction> functions = agg.getAggregateFunctions();
-                    List<Expression> groupByExprs = agg.getGroupByExpressions();
-                    // check if need generate an inner agg plan or not
-                    // should not rewrite twice if we had rewritten olapScan to aggregate(olapScan)
-                    return functions.stream().allMatch(this::aggTypeMatch) && groupByExprs.stream()
+                            Set<AggregateFunction> functions = agg.getAggregateFunctions();
+                            List<Expression> groupByExprs = agg.getGroupByExpressions();
+                            // check if need generate an inner agg plan or not
+                            // should not rewrite twice if we had rewritten olapScan to aggregate(olapScan)
+                            return functions.stream().allMatch(this::aggTypeMatch) && groupByExprs.stream()
                                     .allMatch(this::isKeyOrConstantExpr);
-                })
+                        })
                         .then(agg -> preAggForRandomDistribution(agg, agg.child()))
                         .toRule(RuleType.BUILD_AGG_FOR_RANDOM_DISTRIBUTED_TABLE_AGG_SCAN),
                 // filter(scan) -> filter(agg(scan))
