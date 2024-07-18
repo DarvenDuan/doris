@@ -1686,6 +1686,31 @@ public class EditLog {
         }
     }
 
+    public void logBatchInsertTransactionState(List<TransactionState> transactionStates) {
+        long start = System.currentTimeMillis();
+        List<Pair<Short, ? extends Writable>> logBatch = new ArrayList<>();
+        for (TransactionState state : transactionStates) {
+            logBatch.add(Pair.of(OperationType.OP_UPSERT_TRANSACTION_STATE, state));
+        }
+        List<Long> logIds = logEdit(logBatch);
+        long logEditEnd = System.currentTimeMillis();
+        long end = logEditEnd;
+        Preconditions.checkArgument(logIds.size() == transactionStates.size());
+        for (int i = 0; i < logIds.size(); ++i) {
+            long logId =  logIds.get(i);
+            TransactionState state = transactionStates.get(i);
+            if (state.getTransactionStatus() == TransactionStatus.VISIBLE) {
+                UpsertRecord record = new UpsertRecord(logId, state);
+                Env.getCurrentEnv().getBinlogManager().addUpsertRecord(record);
+                end = System.currentTimeMillis();
+            }
+        }
+        if (end - start > Config.lock_reporting_threshold_ms) {
+            LOG.warn("edit log insert transaction take a lot time, write bdb {} ms, write binlog {} ms",
+                    logEditEnd - start, end - logEditEnd);
+        }
+    }
+
     public void logBackupJob(BackupJob job) {
         logEdit(OperationType.OP_BACKUP_JOB, job);
     }
