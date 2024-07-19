@@ -161,7 +161,7 @@ public class AsyncDatabaseTransactionMgr extends DatabaseTransactionMgr{
             TransactionOpRequest request = new TransactionOpRequest(tid, TxnOperationType.BEGIN,
                     transactionState, future);
             txnRequestQueue.add(request);
-            TransactionOpResponse response = future.get(500, TimeUnit.MILLISECONDS);
+            TransactionOpResponse response = future.get();
             if (response.getResultCode() == TxnOperationResultCode.FAILED) {
                 throw new BeginTransactionException(response.getErrMsg());
             }
@@ -232,7 +232,7 @@ public class AsyncDatabaseTransactionMgr extends DatabaseTransactionMgr{
             TransactionOpRequest request = new TransactionOpRequest(transactionId, TxnOperationType.PRE_COMMIT,
                     transactionState, future);
             txnRequestQueue.add(request);
-            TransactionOpResponse response = future.get(500, TimeUnit.MILLISECONDS);
+            TransactionOpResponse response = future.get();
             if (response.getResultCode() == TxnOperationResultCode.FAILED) {
                 throw new UserException(response.getErrMsg());
             }
@@ -313,7 +313,7 @@ public class AsyncDatabaseTransactionMgr extends DatabaseTransactionMgr{
             TransactionOpRequest request = new TransactionOpRequest(transactionId, TxnOperationType.COMMIT,
                     transactionState, future);
             txnRequestQueue.add(request);
-            TransactionOpResponse response = future.get(500, TimeUnit.MILLISECONDS);
+            TransactionOpResponse response = future.get();
             if (response.getResultCode() == TxnOperationResultCode.FAILED) {
                 throw new BeginTransactionException(response.getErrMsg());
             }
@@ -474,7 +474,7 @@ public class AsyncDatabaseTransactionMgr extends DatabaseTransactionMgr{
             TransactionOpRequest request = new TransactionOpRequest(transactionId, TxnOperationType.COMMIT,
                     transactionState, future);
             txnRequestQueue.add(request);
-            TransactionOpResponse response = future.get(500, TimeUnit.MILLISECONDS);
+            TransactionOpResponse response = future.get();
             if (response.getResultCode() == TxnOperationResultCode.FAILED) {
                 throw new BeginTransactionException(response.getErrMsg());
             }
