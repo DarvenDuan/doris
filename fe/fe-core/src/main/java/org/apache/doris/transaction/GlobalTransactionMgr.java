@@ -205,6 +205,8 @@ public class GlobalTransactionMgr implements GlobalTransactionMgrIface {
             List<TabletCommitInfo> tabletCommitInfos, long timeoutMillis,
             TxnCommitAttachment txnCommitAttachment)
             throws UserException {
+        StopWatch stopWatch = new StopWatch();
+        stopWatch.start();
         if (!MetaLockUtils.tryWriteLockTablesOrMetaException(tableList, timeoutMillis, TimeUnit.MILLISECONDS)) {
             throw new UserException("get tableList write lock timeout, tableList=("
                     + StringUtils.join(tableList, ",") + ")");
@@ -214,6 +216,8 @@ public class GlobalTransactionMgr implements GlobalTransactionMgrIface {
         } finally {
             MetaLockUtils.writeUnlockTables(tableList);
         }
+        stopWatch.stop();
+        MetricRepo.HISTO_TABLE_LIST_WRITE_LOCK_DURATION.update(stopWatch.getTime());
     }
 
     public void preCommitTransaction2PC(long dbId, List<Table> tableList, long transactionId,
@@ -311,6 +315,8 @@ public class GlobalTransactionMgr implements GlobalTransactionMgrIface {
             MetaLockUtils.writeUnlockTables(tableList);
         }
         stopWatch.stop();
+        MetricRepo.HISTO_TABLE_LIST_WRITE_LOCK_DURATION.update(stopWatch.getTime());
+
         long publishTimeoutMillis = timeoutMillis - stopWatch.getTime();
         DatabaseTransactionMgr dbTransactionMgr = getDatabaseTransactionMgr(db.getId());
         if (publishTimeoutMillis < 0) {
@@ -340,6 +346,8 @@ public class GlobalTransactionMgr implements GlobalTransactionMgrIface {
             MetaLockUtils.writeUnlockTables(tableList);
         }
         stopWatch.stop();
+        MetricRepo.HISTO_TABLE_LIST_WRITE_LOCK_DURATION.update(stopWatch.getTime());
+
         long publishTimeoutMillis = timeoutMillis - stopWatch.getTime();
         DatabaseTransactionMgr dbTransactionMgr = getDatabaseTransactionMgr(db.getId());
         if (publishTimeoutMillis < 0) {
@@ -365,6 +373,7 @@ public class GlobalTransactionMgr implements GlobalTransactionMgrIface {
             MetaLockUtils.writeUnlockTables(tableList);
         }
         stopWatch.stop();
+        MetricRepo.HISTO_TABLE_LIST_WRITE_LOCK_DURATION.update(stopWatch.getTime());
         LOG.info("stream load tasks are committed successfully. txns: {}. time cost: {} ms."
                 + " data will be visable later.", transactionId, stopWatch.getTime());
     }
@@ -385,6 +394,8 @@ public class GlobalTransactionMgr implements GlobalTransactionMgrIface {
     public void abortTransaction(Long dbId, Long txnId, String reason,
             TxnCommitAttachment txnCommitAttachment, List<Table> tableList) throws UserException {
         DatabaseTransactionMgr dbTransactionMgr = getDatabaseTransactionMgr(dbId);
+        StopWatch stopWatch = new StopWatch();
+        stopWatch.start();
         if (!MetaLockUtils.tryWriteLockTablesOrMetaException(tableList, 5000, TimeUnit.MILLISECONDS)) {
             throw new UserException("get tableList write lock timeout, tableList=("
                     + StringUtils.join(tableList, ",") + ")");
@@ -394,6 +405,8 @@ public class GlobalTransactionMgr implements GlobalTransactionMgrIface {
         } finally {
             MetaLockUtils.writeUnlockTables(tableList);
         }
+        stopWatch.stop();
+        MetricRepo.HISTO_TABLE_LIST_WRITE_LOCK_DURATION.update(stopWatch.getTime());
     }
 
     // for http cancel stream load api
@@ -406,6 +419,8 @@ public class GlobalTransactionMgr implements GlobalTransactionMgrIface {
     @Override
     public void abortTransaction2PC(Long dbId, long transactionId, List<Table> tableList) throws UserException {
         DatabaseTransactionMgr dbTransactionMgr = getDatabaseTransactionMgr(dbId);
+        StopWatch stopWatch = new StopWatch();
+        stopWatch.start();
         if (!MetaLockUtils.tryWriteLockTablesOrMetaException(tableList, 5000, TimeUnit.MILLISECONDS)) {
             throw new UserException("get tableList write lock timeout, tableList=("
                     + StringUtils.join(tableList, ",") + ")");
@@ -415,6 +430,8 @@ public class GlobalTransactionMgr implements GlobalTransactionMgrIface {
         } finally {
             MetaLockUtils.writeUnlockTables(tableList);
         }
+        stopWatch.stop();
+        MetricRepo.HISTO_TABLE_LIST_WRITE_LOCK_DURATION.update(stopWatch.getTime());
     }
 
     /*

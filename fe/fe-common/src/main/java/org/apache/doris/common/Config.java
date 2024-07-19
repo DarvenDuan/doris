@@ -2686,6 +2686,9 @@ public class Config extends ConfigBase {
     @ConfField(mutable = true, masterOnly = true, description = "是否开启事务批量处理，高并发场景下能够提高系统吞吐")
     public static boolean enable_batch_process_txn = false;
 
+    @ConfField(mutable = true, masterOnly = true, description = "批量处理事务时间间隔")
+    public static int batch_process_txn_interval_millisecond = 100;
+
     //==========================================================================
     //                    begin of cloud config
     //==========================================================================

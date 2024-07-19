@@ -24,6 +24,7 @@ import org.apache.doris.catalog.Partition;
 import org.apache.doris.catalog.PartitionInfo;
 import org.apache.doris.catalog.Table;
 import org.apache.doris.common.AnalysisException;
+import org.apache.doris.common.Config;
 import org.apache.doris.common.DuplicatedRequestException;
 import org.apache.doris.common.LabelAlreadyUsedException;
 import org.apache.doris.common.MetaNotFoundException;
@@ -52,6 +53,7 @@ import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
@@ -66,8 +68,9 @@ public class AsyncDatabaseTransactionMgr extends DatabaseTransactionMgr{
     public AsyncDatabaseTransactionMgr(long dbId, Env env, TransactionIdGenerator idGenerator) {
         super(dbId, env, idGenerator);
         scheduledExecutorService =
-                new ScheduledThreadPoolExecutor(1, new ExecutorThreadFactory("txn-opt-thread"));
-        scheduledExecutorService.scheduleAtFixedRate(this::processBatchTxn, 0, 100, TimeUnit.MILLISECONDS);
+                Executors.newScheduledThreadPool(1, new ExecutorThreadFactory("txn-opt-thread"));
+        scheduledExecutorService.scheduleAtFixedRate(this::processBatchTxn, 0, 
+                Config.batch_process_txn_interval_millisecond, TimeUnit.MILLISECONDS);
     }
 
     private void processBatchTxn() {
@@ -75,9 +78,9 @@ public class AsyncDatabaseTransactionMgr extends DatabaseTransactionMgr{
         if (size == 0) {
             return;
         }
+        LOG.info("begin transaction request size: " + size);
         List<TransactionOpRequest> requests = new ArrayList<>();
         List<TransactionState> states = new ArrayList<>();
-        LOG.info("begin transaction request size: " + size);
         for (int i = 0; i < size; ++i) {
             TransactionOpRequest request = txnRequestQueue.pop();
             requests.add(request);
@@ -149,7 +152,7 @@ public class AsyncDatabaseTransactionMgr extends DatabaseTransactionMgr{
             checkForBeginTxn(requestId, label);
             checkRunningTxnExceedLimit();
         } finally {
-            readLock();
+            readUnlock();
         }
 
         long tid = idGenerator.getNextTransactionId();
@@ -161,7 +164,9 @@ public class AsyncDatabaseTransactionMgr extends DatabaseTransactionMgr{
             TransactionOpRequest request = new TransactionOpRequest(tid, TxnOperationType.BEGIN,
                     transactionState, future);
             txnRequestQueue.add(request);
+            LOG.info("add begin txn request to queue, txnId: " + tid);
             TransactionOpResponse response = future.get();
+            LOG.info("succeed begin transaction, txnId: " + tid);
             if (response.getResultCode() == TxnOperationResultCode.FAILED) {
                 throw new BeginTransactionException(response.getErrMsg());
             }
@@ -232,7 +237,9 @@ public class AsyncDatabaseTransactionMgr extends DatabaseTransactionMgr{
             TransactionOpRequest request = new TransactionOpRequest(transactionId, TxnOperationType.PRE_COMMIT,
                     transactionState, future);
             txnRequestQueue.add(request);
+            LOG.info("add pre-commit request to queue, txnId: " + transactionId);
             TransactionOpResponse response = future.get();
+            LOG.info("succeed pre-commit transaction, txnId: " + transactionId);
             if (response.getResultCode() == TxnOperationResultCode.FAILED) {
                 throw new UserException(response.getErrMsg());
             }
@@ -313,7 +320,9 @@ public class AsyncDatabaseTransactionMgr extends DatabaseTransactionMgr{
             TransactionOpRequest request = new TransactionOpRequest(transactionId, TxnOperationType.COMMIT,
                     transactionState, future);
             txnRequestQueue.add(request);
+            LOG.info("add commit txn request to queue, txnId: " + transactionId);
             TransactionOpResponse response = future.get();
+            LOG.info("succeed commit transaction, txnId: " + transactionId);
             if (response.getResultCode() == TxnOperationResultCode.FAILED) {
                 throw new BeginTransactionException(response.getErrMsg());
             }
@@ -474,7 +483,9 @@ public class AsyncDatabaseTransactionMgr extends DatabaseTransactionMgr{
             TransactionOpRequest request = new TransactionOpRequest(transactionId, TxnOperationType.COMMIT,
                     transactionState, future);
             txnRequestQueue.add(request);
+            LOG.info("add commit txn request to queue, txnId: " + transactionId);
             TransactionOpResponse response = future.get();
+            LOG.info("succeed commit transaction, txnId: " + transactionId);
             if (response.getResultCode() == TxnOperationResultCode.FAILED) {
                 throw new BeginTransactionException(response.getErrMsg());
             }
