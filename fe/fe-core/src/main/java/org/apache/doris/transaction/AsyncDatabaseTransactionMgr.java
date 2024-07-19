@@ -67,7 +67,7 @@ public class AsyncDatabaseTransactionMgr extends DatabaseTransactionMgr{
         super(dbId, env, idGenerator);
         scheduledExecutorService =
                 new ScheduledThreadPoolExecutor(1, new ExecutorThreadFactory("txn-opt-thread"));
-        scheduledExecutorService.scheduleWithFixedDelay(this::processBatchTxn, 0, 100,  TimeUnit.MILLISECONDS);
+        scheduledExecutorService.scheduleAtFixedRate(this::processBatchTxn, 0, 100, TimeUnit.MILLISECONDS);
     }
 
     private void processBatchTxn() {
