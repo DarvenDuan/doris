@@ -36,7 +36,6 @@ import org.apache.doris.common.Config;
 import org.apache.doris.common.DuplicatedRequestException;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
-import org.apache.doris.common.FeNameFormat;
 import org.apache.doris.common.LabelAlreadyUsedException;
 import org.apache.doris.common.LoadException;
 import org.apache.doris.common.MetaNotFoundException;
@@ -45,13 +44,11 @@ import org.apache.doris.common.QuotaExceedException;
 import org.apache.doris.common.UserException;
 import org.apache.doris.common.util.DebugPointUtil;
 import org.apache.doris.common.util.DebugUtil;
-import org.apache.doris.common.util.InternalDatabaseUtil;
 import org.apache.doris.common.util.MetaLockUtils;
 import org.apache.doris.common.util.TimeUtils;
 import org.apache.doris.datasource.InternalCatalog;
 import org.apache.doris.event.DataChangeEvent;
 import org.apache.doris.metric.MetricRepo;
-import org.apache.doris.mtmv.MTMVUtil;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.persist.BatchRemoveTransactionsOperationV2;
 import org.apache.doris.persist.CleanLabelOperationLog;
@@ -117,14 +114,14 @@ public class DatabaseTransactionMgr {
     // set it to avoid holding lock too long when removing too many txns per round.
     private static final int MAX_REMOVE_TXN_PER_ROUND = 10000;
 
-    private final long dbId;
+    protected final long dbId;
 
     // the lock is used to control the access to transaction states
     // no other locks should be inside this lock
     private final ReentrantReadWriteLock transactionLock = new ReentrantReadWriteLock(true);
 
     // transactionId -> running TransactionState
-    private final Map<Long, TransactionState> idToRunningTransactionState = Maps.newHashMap();
+    protected final Map<Long, TransactionState> idToRunningTransactionState = Maps.newHashMap();
 
     /**
      * the multi table ids that are in transaction, used to check whether a table is in transaction
@@ -135,7 +132,7 @@ public class DatabaseTransactionMgr {
             new ConcurrentHashMap<>();
 
     // transactionId -> final status TransactionState
-    private final Map<Long, TransactionState> idToFinalStatusTransactionState = Maps.newHashMap();
+    protected final Map<Long, TransactionState> idToFinalStatusTransactionState = Maps.newHashMap();
     private final Map<Long, Long> subTxnIdToTxnId = new ConcurrentHashMap<>();
 
     // The following 2 queues are to store transactionStates with final status
@@ -144,8 +141,8 @@ public class DatabaseTransactionMgr {
     // The "Short" queue is used to store the txns of the expire time
     // controlled by Config.streaming_label_keep_max_second.
     // The "Long" queue is used to store the txns of the expire time controlled by Config.label_keep_max_second.
-    private final ArrayDeque<TransactionState> finalStatusTransactionStateDequeShort = new ArrayDeque<>();
-    private final ArrayDeque<TransactionState> finalStatusTransactionStateDequeLong = new ArrayDeque<>();
+    protected final ArrayDeque<TransactionState> finalStatusTransactionStateDequeShort = new ArrayDeque<>();
+    protected final ArrayDeque<TransactionState> finalStatusTransactionStateDequeLong = new ArrayDeque<>();
 
     // label -> txn ids
     // this is used for checking if label already used. a label may correspond to multiple txns,
@@ -156,13 +153,13 @@ public class DatabaseTransactionMgr {
     private final Map<String, Set<Long>> labelToTxnIds = Maps.newHashMap();
 
     // count the number of running txns of database
-    private volatile int runningTxnNums = 0;
+    protected volatile int runningTxnNums = 0;
 
-    private final Env env;
+    protected final Env env;
 
-    private final EditLog editLog;
+    protected final EditLog editLog;
 
-    private final TransactionIdGenerator idGenerator;
+    protected final TransactionIdGenerator idGenerator;
 
     private final List<ClearTransactionTask> clearTransactionTasks = Lists.newArrayList();
 
@@ -173,20 +170,20 @@ public class DatabaseTransactionMgr {
 
     private long lockReportingThresholdMs = Config.lock_reporting_threshold_ms;
 
-    private void readLock() {
+    protected void readLock() {
         this.transactionLock.readLock().lock();
     }
 
-    private void readUnlock() {
+    protected void readUnlock() {
         this.transactionLock.readLock().unlock();
     }
 
-    private void writeLock() {
+    protected void writeLock() {
         this.transactionLock.writeLock().lock();
         lockWriteStart = System.currentTimeMillis();
     }
 
-    private void writeUnlock() {
+    protected void writeUnlock() {
         checkAndLogWriteLockDuration(lockWriteStart, System.currentTimeMillis());
         this.transactionLock.writeLock().unlock();
     }
@@ -211,7 +208,7 @@ public class DatabaseTransactionMgr {
         }
     }
 
-    private TransactionState unprotectedGetTransactionState(Long transactionId) {
+    protected TransactionState unprotectedGetTransactionState(Long transactionId) {
         TransactionState transactionState = idToRunningTransactionState.get(transactionId);
         if (transactionState != null) {
             return transactionState;
@@ -348,51 +345,11 @@ public class DatabaseTransactionMgr {
             long listenerId, long timeoutSecond)
             throws DuplicatedRequestException, LabelAlreadyUsedException, BeginTransactionException,
             AnalysisException, QuotaExceedException, MetaNotFoundException {
-        Database db = env.getInternalCatalog().getDbOrMetaException(dbId);
-        if (!coordinator.isFromInternal) {
-            InternalDatabaseUtil.checkDatabase(db.getFullName(), ConnectContext.get());
-        }
-        MTMVUtil.checkModifyMTMVData(db, tableIdList, ConnectContext.get());
         checkDatabaseDataQuota();
-        Preconditions.checkNotNull(coordinator);
-        Preconditions.checkNotNull(label);
-        FeNameFormat.checkLabel(label);
-
         long tid = 0L;
         writeLock();
         try {
-            /*
-             * Check if label already used, by following steps
-             * 1. get all existing transactions
-             * 2. if there is a PREPARE transaction, check if this is a retry request. If yes, return the
-             *    existing txn id.
-             * 3. if there is a non-aborted transaction, throw label already used exception.
-             */
-            Set<Long> existingTxnIds = unprotectedGetTxnIdsByLabel(label);
-            if (existingTxnIds != null && !existingTxnIds.isEmpty()) {
-                List<TransactionState> notAbortedTxns = Lists.newArrayList();
-                for (long txnId : existingTxnIds) {
-                    TransactionState txn = unprotectedGetTransactionState(txnId);
-                    Preconditions.checkNotNull(txn);
-                    if (txn.getTransactionStatus() != TransactionStatus.ABORTED) {
-                        notAbortedTxns.add(txn);
-                    }
-                }
-                // there should be at most 1 txn in PREPARE/PRECOMMITTED/COMMITTED/VISIBLE status
-                Preconditions.checkState(notAbortedTxns.size() <= 1, notAbortedTxns);
-                if (!notAbortedTxns.isEmpty()) {
-                    TransactionState notAbortedTxn = notAbortedTxns.get(0);
-                    if (requestId != null && (notAbortedTxn.getTransactionStatus() == TransactionStatus.PREPARE
-                            || notAbortedTxn.getTransactionStatus() == TransactionStatus.PRECOMMITTED)
-                            && notAbortedTxn.getRequestId() != null && notAbortedTxn.getRequestId().equals(requestId)) {
-                        // this may be a retry request for same job, just return existing txn id.
-                        throw new DuplicatedRequestException(DebugUtil.printId(requestId),
-                                notAbortedTxn.getTransactionId(), "");
-                    }
-                    throw new LabelAlreadyUsedException(notAbortedTxn);
-                }
-            }
-
+            checkForBeginTxn(requestId, label);
             checkRunningTxnExceedLimit();
 
             tid = idGenerator.getNextTransactionId();
@@ -412,7 +369,7 @@ public class DatabaseTransactionMgr {
         return tid;
     }
 
-    private void checkDatabaseDataQuota() throws MetaNotFoundException, QuotaExceedException {
+    protected void checkDatabaseDataQuota() throws MetaNotFoundException, QuotaExceedException {
         Database db = env.getInternalCatalog().getDbOrMetaException(dbId);
 
         if (usedQuotaDataBytes == -1) {
@@ -481,7 +438,7 @@ public class DatabaseTransactionMgr {
         LOG.info("transaction:[{}] successfully pre-committed", transactionState);
     }
 
-    private void checkCommitStatus(List<Table> tableList, TransactionState transactionState,
+    protected void checkCommitStatus(List<Table> tableList, TransactionState transactionState,
                                    List<TabletCommitInfo> tabletCommitInfos, TxnCommitAttachment txnCommitAttachment,
                                    Set<Long> errorReplicaIds, Map<Long, Set<Long>> tableToPartition,
                                    Set<Long> totalInvolvedBackends) throws UserException {
@@ -672,7 +629,7 @@ public class DatabaseTransactionMgr {
         return writeDetail;
     }
 
-    private void checkTransactionStateBeforeCommit(Database db, List<Table> tableList, long transactionId,
+    protected void checkTransactionStateBeforeCommit(Database db, List<Table> tableList, long transactionId,
             boolean is2PC, TransactionState transactionState)
             throws TransactionCommitFailedException {
         if (transactionState == null) {
@@ -1482,7 +1439,7 @@ public class DatabaseTransactionMgr {
         transactionState.setInvolvedBackends(totalInvolvedBackends);
     }
 
-    private PartitionCommitInfo generatePartitionCommitInfo(OlapTable table, long partitionId, long partitionVersion) {
+    protected PartitionCommitInfo generatePartitionCommitInfo(OlapTable table, long partitionId, long partitionVersion) {
         PartitionInfo tblPartitionInfo = table.getPartitionInfo();
         String partitionRange = tblPartitionInfo.getPartitionRangeString(partitionId);
         return new PartitionCommitInfo(partitionId, partitionRange,
@@ -1665,7 +1622,7 @@ public class DatabaseTransactionMgr {
         }
     }
 
-    private void updateTxnLabels(TransactionState transactionState) {
+    protected void updateTxnLabels(TransactionState transactionState) {
         Set<Long> txnIds = labelToTxnIds.computeIfAbsent(transactionState.getLabel(), k -> Sets.newHashSet());
         txnIds.add(transactionState.getTransactionId());
     }
@@ -2067,7 +2024,42 @@ public class DatabaseTransactionMgr {
         }
     }
 
-    private void updateCatalogAfterCommitted(TransactionState transactionState, Database db, boolean isReplay) {
+    protected void checkForBeginTxn(TUniqueId requestId, String label)
+            throws DuplicatedRequestException, LabelAlreadyUsedException {
+        /*
+         * Check if label already used, by following steps
+         * 1. get all existing transactions
+         * 2. if there is a PREPARE transaction, check if this is a retry request. If yes, return the
+         *    existing txn id.
+         * 3. if there is a non-aborted transaction, throw label already used exception.
+         */
+        Set<Long> existingTxnIds = unprotectedGetTxnIdsByLabel(label);
+        if (existingTxnIds != null && !existingTxnIds.isEmpty()) {
+            List<TransactionState> notAbortedTxns = Lists.newArrayList();
+            for (long txnId : existingTxnIds) {
+                TransactionState txn = unprotectedGetTransactionState(txnId);
+                Preconditions.checkNotNull(txn);
+                if (txn.getTransactionStatus() != TransactionStatus.ABORTED) {
+                    notAbortedTxns.add(txn);
+                }
+            }
+            // there should be at most 1 txn in PREPARE/PRECOMMITTED/COMMITTED/VISIBLE status
+            Preconditions.checkState(notAbortedTxns.size() <= 1, notAbortedTxns);
+            if (!notAbortedTxns.isEmpty()) {
+                TransactionState notAbortedTxn = notAbortedTxns.get(0);
+                if (requestId != null && (notAbortedTxn.getTransactionStatus() == TransactionStatus.PREPARE
+                        || notAbortedTxn.getTransactionStatus() == TransactionStatus.PRECOMMITTED)
+                        && notAbortedTxn.getRequestId() != null && notAbortedTxn.getRequestId().equals(requestId)) {
+                    // this may be a retry request for same job, just return existing txn id.
+                    throw new DuplicatedRequestException(DebugUtil.printId(requestId),
+                            notAbortedTxn.getTransactionId(), "");
+                }
+                throw new LabelAlreadyUsedException(notAbortedTxn);
+            }
+        }
+    }
+
+    protected void updateCatalogAfterCommitted(TransactionState transactionState, Database db, boolean isReplay) {
         if (transactionState.getSubTxnIds() != null) {
             List<TableCommitInfo> tableCommitInfos = transactionState.getSubTxnTableCommitInfos();
             updatePartitionNextVersion(transactionState, db, isReplay, tableCommitInfos);
