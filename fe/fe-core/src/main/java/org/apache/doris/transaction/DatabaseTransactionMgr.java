@@ -1418,6 +1418,7 @@ public class DatabaseTransactionMgr {
             return;
         }
         // update transaction state version
+        MetricRepo.HISTO_TXN_PRE_COMMIT_LATENCY.update(System.currentTimeMillis()-transactionState.getPrepareTime());
         transactionState.setPreCommitTime(System.currentTimeMillis());
         transactionState.setTransactionStatus(TransactionStatus.PRECOMMITTED);
         transactionState.setErrorReplicas(errorReplicaIds);

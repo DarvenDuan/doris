@@ -147,6 +147,8 @@ public final class MetricRepo {
     // for table list write lock
     public static Histogram HISTO_TABLE_LIST_WRITE_LOCK_DURATION;
 
+    public static Histogram HISTO_TXN_PRE_COMMIT_LATENCY;
+
     private static Map<Pair<EtlJobType, JobState>, Long> loadJobNum = Maps.newHashMap();
 
     private static ScheduledThreadPoolExecutor metricTimer = ThreadPoolManager.newDaemonScheduledThreadPool(1,
@@ -530,6 +532,8 @@ public final class MetricRepo {
         HISTO_TABLE_LIST_WRITE_LOCK_DURATION = METRIC_REGISTER.histogram(
             MetricRegistry.name("table_list_write_lock_duration", "latency", "ms"));
 
+        HISTO_TXN_PRE_COMMIT_LATENCY = METRIC_REGISTER.histogram(
+            MetricRegistry.name("txn_pre_commit", "latency", "ms"));
         // init system metrics
         initSystemMetrics();
         CloudMetrics.init();
