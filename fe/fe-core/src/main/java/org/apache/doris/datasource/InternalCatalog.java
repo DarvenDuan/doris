@@ -953,7 +953,8 @@ public class InternalCatalog implements CatalogIf<Database> {
 
             Env.getCurrentEnv().getAnalysisManager().removeTableStats(table.getId());
 
-            DropInfo info = new DropInfo(db.getId(), table.getId(), tableName, -1L, stmt.isForceDrop(), recycleTime);
+            DropInfo info = new DropInfo(db.getId(), table.getId(), tableName, -1L, stmt.isForceDrop(),
+                    recycleTime, -1);
             Env.getCurrentEnv().getEditLog().logDropTable(info);
 
             Env.getCurrentEnv().getMtmvService().dropTable(table);
@@ -3042,7 +3043,7 @@ public class InternalCatalog implements CatalogIf<Database> {
             try {
                 dropTable(db, tableId, true, false, 0L);
                 if (hadLogEditCreateTable) {
-                    DropInfo info = new DropInfo(db.getId(), tableId, olapTable.getName(), -1L, true, 0L);
+                    DropInfo info = new DropInfo(db.getId(), tableId, olapTable.getName(), -1L, true, 0L, -1);
                     Env.getCurrentEnv().getEditLog().logDropTable(info);
                 }
             } catch (Exception ex) {

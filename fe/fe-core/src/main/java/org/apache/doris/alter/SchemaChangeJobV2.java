@@ -624,6 +624,11 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
             } // end for partitions
             commitShadowIndex();
             // all partitions are good
+            try {
+                this.deleteTabletWatermarkTxnId = Env.getCurrentGlobalTransactionMgr().getNextTransactionId();
+            } catch (UserException e) {
+                LOG.warn("get next transaction id failed");
+            }
             onFinished(tbl);
         } finally {
             tbl.writeUnlock();
@@ -682,8 +687,9 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                 partition.visualiseShadowIndex(shadowIdxId, originIdxId == partition.getBaseIndex().getId());
 
                 // delete origin replicas
+                TabletInvertedIndex invertedIndex = Env.getCurrentInvertedIndex();
                 for (Tablet originTablet : droppedIdx.getTablets()) {
-                    Env.getCurrentInvertedIndex().deleteTablet(originTablet.getId());
+                    invertedIndex.addDecommissionTablet(originTablet.getId(), deleteTabletWatermarkTxnId);
                 }
             }
         }
@@ -749,7 +755,12 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
         if (jobState.isFinalState()) {
             return false;
         }
-
+        try {
+            this.deleteTabletWatermarkTxnId =
+                    Env.getCurrentGlobalTransactionMgr().getNextTransactionId();
+        } catch (Exception e) {
+            LOG.warn("get next transaction id failed");
+        }
         cancelInternal();
 
         pruneMeta();
@@ -784,7 +795,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                         for (Map.Entry<Long, MaterializedIndex> entry : shadowIndexMap.entrySet()) {
                             MaterializedIndex shadowIdx = entry.getValue();
                             for (Tablet shadowTablet : shadowIdx.getTablets()) {
-                                invertedIndex.deleteTablet(shadowTablet.getId());
+                                invertedIndex.addDecommissionTablet(shadowTablet.getId(), deleteTabletWatermarkTxnId);
                             }
                             partition.deleteRollupIndex(shadowIdx.getId());
                         }
@@ -879,6 +890,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
      * Should replay all changes in runRunningJob()
      */
     private void replayRunningJob(SchemaChangeJobV2 replayedJob) {
+        this.deleteTabletWatermarkTxnId = replayedJob.deleteTabletWatermarkTxnId;
         Database db = Env.getCurrentInternalCatalog().getDbNullable(dbId);
         if (db != null) {
             OlapTable tbl = (OlapTable) db.getTableNullable(tableId);
@@ -904,6 +916,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
      * Replay job in CANCELLED state.
      */
     private void replayCancelled(SchemaChangeJobV2 replayedJob) {
+        this.deleteTabletWatermarkTxnId = replayedJob.deleteTabletWatermarkTxnId;
         cancelInternal();
         // try best to drop shadow index
         postProcessShadowIndex();
